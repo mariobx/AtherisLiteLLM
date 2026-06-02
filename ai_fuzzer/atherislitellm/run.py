@@ -1,18 +1,17 @@
+from pydantic import functional_validators
 import concurrent.futures
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List
+import pandas as pd
 from ai_fuzzer.atherislitellm.llm import llm_requests as atherisai
-from ai_fuzzer.atherislitellm.sandbox import sandbox
-from ai_fuzzer.atherislitellm.parsing import function_parser
+from ai_fuzzer.atherislitellm.analysis import create_starting_dataframe, add_columns_to_dataframe
+from ai_fuzzer.atherislitellm.parsing import function_parser, file_saver
 from ai_fuzzer.atherislitellm.smell.smell import code_smells
 from ai_fuzzer.atherislitellm.logger.logs import log, report_failure
 
-def retrieve_function_candidates(template: str, path: Path, debug: bool = False, smell: bool = False) -> dict[str, str]:
-    """
-    Scans the target directory for top-level functions and builds a map of ready-to-use LLM prompts.
-    """
-    func_tests = {}
+def find_function_candidates(path: Path, debug: bool = False, smell: bool = False) -> dict[str, str]:
+    func_name_contents = {}
     try:
         pyfiles = function_parser.get_python_file_paths(path, debug=debug)
         log(f"Scanning {len(pyfiles)} files for functions...", level="INFO")
@@ -24,20 +23,30 @@ def retrieve_function_candidates(template: str, path: Path, debug: bool = False,
                     if smell:
                         if not code_smells(python_code=func_body, debug=debug):
                             continue
-                    full_prompt = atherisai.format_prompt(template, func_body, debug)
-                    func_tests[func_name] = full_prompt
+                    func_name_contents[func_name] = func_body
             except Exception as e:
-                    log(f"Error parsing functions in {pyfile}: {e}", level="ERROR")
+                log(f"Error parsing functions in {pyfile}: {e}", level="ERROR")
+    except Exception as e:
+        report_failure(f"Critical error during function retrieval: {e}", "Parser")
+        return {}
+    return func_name_contents        
+
+def prompt_function_candidates(template: str, func_name_contents: dict[str, str], debug: bool = False) -> dict[str, str]:
+    """
+    Scans the target directory for top-level functions and builds a map of ready-to-use LLM prompts.
+    """
+    func_tests = {}
+    try:
+        for func_name, func_body in func_name_contents.items():
+            full_prompt = atherisai.format_prompt(template, func_body, debug)
+            func_tests[func_name] = full_prompt
     except Exception as e:
         report_failure(f"Critical error during function retrieval: {e}", "Parser")
         
     return func_tests
 
-def retrieve_class_candidates(template: str, path: Path, debug: bool = False, smell: bool = False) -> dict[str, str]:
-    """
-    Extracts class methods and pairs them with their parent class definition for context.
-    """
-    class_tests = {}
+def find_class_candidates(path: Path, debug: bool = False, smell: bool = False) -> dict[str, str]:
+    class_name_contents = {}
     try:
         pyfiles = function_parser.get_python_file_paths(path, debug=debug)
         log(f"Scanning {len(pyfiles)} files for classes...", level="INFO")
@@ -49,22 +58,37 @@ def retrieve_class_candidates(template: str, path: Path, debug: bool = False, sm
                     if smell:
                         if not code_smells(python_code=class_body, debug=debug):
                             continue
-                    methods = functions_inside_classes.get(class_name, []) 
-                    for function_name, function_body in methods:
-                        customized_target_prompt = (
-                            f"\n\n{class_body}\n\n"
-                            f"**FUZZING FOCUS**\n"
-                            f"Method Name: {function_name}\n"
-                            f"Method Body:\n{function_body}"
-                        )
-                        full_prompt = atherisai.format_prompt(template, customized_target_prompt, debug) 
-                        current_spot_in_code = f"{class_name}.{function_name}"
-                        class_tests[current_spot_in_code] = full_prompt
+                    for function_name, function_body in functions_inside_classes.get(class_name, []):
+                        class_name_contents[f"{class_name}.{function_name}"] = {
+                            "class_name": class_name,
+                            "class_body": class_body,
+                            "function_name": function_name,
+                            "function_body": function_body
+                            }
             except Exception as e:
                 log(f"Error parsing classes in {pyfile}: {e}", level="ERROR")
     except Exception as e:
         report_failure(f"Critical error during class retrieval: {e}", "Parser")
+        return {}
+    return class_name_contents
 
+def prompt_class_candidates(template: str, class_contents: dict[str, dict[str, str]], debug: bool = False) -> dict[str, str]:
+    """
+    Scans the target directory for top-level classes and builds a map of ready-to-use LLM prompts.
+    """
+    class_tests = {}
+    try:
+        for class_name, class_body in class_contents.items():
+            customized_target_prompt = (
+                f"\n\n{class_body['class_body']}\n\n"
+                f"**FUZZING FOCUS**\n"
+                f"Method Name: {class_body['function_name']}\n"
+                f"Method Body:\n{class_body['function_body']}"
+            )
+            full_prompt = atherisai.format_prompt(template, customized_target_prompt, debug) 
+            class_tests[class_name] = full_prompt
+    except Exception as e:
+        report_failure(f"Critical error during class retrieval: {e}", "Parser")
     return class_tests
 
 def process_candidate(name: str, full_prompt: str, client: dict, run_dir: Path, temperature: float, debug: bool, **kwargs):
@@ -83,8 +107,9 @@ def process_candidate(name: str, full_prompt: str, client: dict, run_dir: Path, 
         if response:
             block = atherisai.extract_code_blocks(response)
             if block:
-                sandbox.save_to_file(name, block, run_dir, debug=debug)
+                file_saver.save_to_file(name, block, run_dir, debug=debug)
                 log(f"Generated harness: {name}", level="INFO")
+                return name, block
             else:
                 report_failure(f"No code block found in LLM response for: {name}", "Generation")
         else:
@@ -99,6 +124,7 @@ def run_multi_threaded_generation(
     temperature: float,
     workers: int,
     debug: bool,
+    analysis_df: pd.DataFrame,
     **kwargs
 ) -> None:
     """
@@ -116,7 +142,10 @@ def run_multi_threaded_generation(
         for future in concurrent.futures.as_completed(futures):
             name = futures[future]
             try:
-                future.result()
+                result = future.result()
+                if result:
+                    returned_name, block = result
+                    analysis_df.loc[analysis_df['candidate_name'] == returned_name, 'created_harness'] = block
             except Exception as e:
                 report_failure(f"Thread execution failed for {name}: {e}", "Threading")
 
@@ -146,15 +175,60 @@ def run(
         log(f"Loading prompt template: {prompt_id}", level="DEBUG", debug=debug)
         temperature, _, template = atherisai.load_prompt_data(prompt_id, prompt_yaml_path, debug)
         
-        function_code_snippets = retrieve_function_candidates(template, source_dir, debug=debug, smell=smell)
-        class_code_snippets = retrieve_class_candidates(template, source_dir, debug=debug, smell=smell)
+        function_code_snippets = find_function_candidates(source_dir, debug=debug, smell=smell)
+        function_prompts = prompt_function_candidates(template, function_code_snippets, debug=debug)
+        class_code_snippets = find_class_candidates(source_dir, debug=debug, smell=smell)
+        class_prompts = prompt_class_candidates(template, class_code_snippets, debug=debug)
+
+        analysis_df = create_starting_dataframe()
+        rows = []
+
+        for name, body in function_code_snippets.items():
+            rows.append({
+                "candidate_name": name,
+                "entity_type": "function",
+                "model": model.strip() if model else "",
+                "temperature": temperature,
+                "prompt_id": prompt_id,
+                "full_prompt": function_prompts[name],
+                "fuzz_target": body,
+                "created_harness": "",
+                "harness_valid_syntax": False,
+                **{col: 0 for col in analysis_df.columns if col not in [
+                    "candidate_name", "entity_type", "model", "temperature", 
+                    "prompt_id", "full_prompt", "fuzz_target", "created_harness", 
+                    "harness_valid_syntax"
+                ]}
+            })
+        for name, body in class_code_snippets.items():
+            rows.append({
+                "candidate_name": name,
+                "entity_type": "class",
+                "model": model.strip() if model else "",
+                "temperature": temperature,
+                "prompt_id": prompt_id,
+                "full_prompt": class_prompts[name],
+                "fuzz_target": body["class_body"] + "\n\n#FOCUSING-ON\n\n" + body["function_body"],
+                "created_harness": "",
+                "harness_valid_syntax": False,
+                **{col: 0 for col in analysis_df.columns if col not in [
+                    "candidate_name", "entity_type", "model", "temperature", 
+                    "prompt_id", "full_prompt", "fuzz_target", "created_harness", 
+                    "harness_valid_syntax"
+                ]}
+            })
+        if rows:
+            analysis_df = pd.concat([analysis_df, pd.DataFrame(rows)], ignore_index=True)
         
-        all_fuzzing_candidates = function_code_snippets | class_code_snippets
+        all_fuzzing_candidates = function_prompts | class_prompts
         
         log(f"Discovery phase complete. Found {len(function_code_snippets)} functions and {len(class_code_snippets)} classes.", level="INFO")
         
         del function_code_snippets
         del class_code_snippets
+        del function_prompts
+        del class_prompts
+        del rows
 
         if not all_fuzzing_candidates:
             log("No valid functions or classes found for fuzzing.", level="INFO")
@@ -167,8 +241,11 @@ def run(
             temperature=temperature,
             workers=workers,
             debug=debug,
+            analysis_df=analysis_df,
             **kwargs
         )
+
+        analysis_df.to_csv(run_dir / "analysis.csv", index=False)
 
         log(f"Success. All harnesses saved in: {run_dir}", level="INFO")
 

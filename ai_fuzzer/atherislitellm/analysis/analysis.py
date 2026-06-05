@@ -11,7 +11,7 @@ COLUMNS = [
     "target_maintainability_index", "created_harness", "harness_lines_of_code", 
     "harness_logical_lines_of_code", "harness_source_lines_of_code",
     "harness_cyclomatic_complexity", "harness_cyclomatic_complexity_rank",
-    "harness_maintainability_index", "harness_valid_syntax"
+    "harness_maintainability_index", "tokens_used"
 ]
 
 def create_starting_dataframe() -> pd.DataFrame:

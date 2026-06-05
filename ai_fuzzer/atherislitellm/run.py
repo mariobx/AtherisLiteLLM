@@ -5,12 +5,12 @@ from datetime import datetime
 from typing import Dict, List
 import pandas as pd
 from ai_fuzzer.atherislitellm.llm import llm_requests as atherisai
-from ai_fuzzer.atherislitellm.analysis import create_starting_dataframe, add_columns_to_dataframe
+from ai_fuzzer.atherislitellm.analysis.analysis import create_starting_dataframe, add_columns_to_dataframe
 from ai_fuzzer.atherislitellm.parsing import function_parser, file_saver
 from ai_fuzzer.atherislitellm.smell.smell import code_smells
 from ai_fuzzer.atherislitellm.logger.logs import log, report_failure
 
-def find_function_candidates(path: Path, debug: bool = False, smell: bool = False) -> dict[str, str]:
+def find_function_candidates(path: Path, debug: bool = False, smell: bool = False, test_threshold: float = 1.1) -> dict[str, str]:
     func_name_contents = {}
     try:
         pyfiles = function_parser.get_python_file_paths(path, debug=debug)
@@ -18,7 +18,7 @@ def find_function_candidates(path: Path, debug: bool = False, smell: bool = Fals
         
         for pyfile in pyfiles:
             try:
-                funcs = function_parser.extract_functions(pyfile, debug=debug)
+                funcs = function_parser.extract_functions(pyfile, debug=debug, test_threshold=test_threshold)
                 for func_name, func_body in funcs.items():
                     if smell:
                         if not code_smells(python_code=func_body, debug=debug):
@@ -45,7 +45,7 @@ def prompt_function_candidates(template: str, func_name_contents: dict[str, str]
         
     return func_tests
 
-def find_class_candidates(path: Path, debug: bool = False, smell: bool = False) -> dict[str, str]:
+def find_class_candidates(path: Path, debug: bool = False, smell: bool = False, test_threshold: float = 1.1) -> dict[str, str]:
     class_name_contents = {}
     try:
         pyfiles = function_parser.get_python_file_paths(path, debug=debug)
@@ -53,7 +53,7 @@ def find_class_candidates(path: Path, debug: bool = False, smell: bool = False) 
         
         for pyfile in pyfiles:
             try:
-                classes_in_file, functions_inside_classes = function_parser.extract_classes(pyfile, debug=debug)
+                classes_in_file, functions_inside_classes = function_parser.extract_classes(pyfile, debug=debug, test_threshold=test_threshold)
                 for class_name, class_body in classes_in_file.items():
                     if smell:
                         if not code_smells(python_code=class_body, debug=debug):
@@ -97,7 +97,7 @@ def process_candidate(name: str, full_prompt: str, client: dict, run_dir: Path, 
     """
     try:
         log(f"Starting generation for: {name}", level="DEBUG", debug=debug)
-        response = atherisai.get_response(
+        response, tokens = atherisai.get_response(
             client=client,
             temperature=temperature,
             full_prompt=full_prompt,
@@ -109,7 +109,7 @@ def process_candidate(name: str, full_prompt: str, client: dict, run_dir: Path, 
             if block:
                 file_saver.save_to_file(name, block, run_dir, debug=debug)
                 log(f"Generated harness: {name}", level="INFO")
-                return name, block
+                return name, block, tokens
             else:
                 report_failure(f"No code block found in LLM response for: {name}", "Generation")
         else:
@@ -144,13 +144,14 @@ def run_multi_threaded_generation(
             try:
                 result = future.result()
                 if result:
-                    returned_name, block = result
+                    returned_name, block, tokens = result
                     analysis_df.loc[analysis_df['candidate_name'] == returned_name, 'created_harness'] = block
+                    analysis_df.loc[analysis_df['candidate_name'] == returned_name, 'tokens_used'] = tokens
             except Exception as e:
                 report_failure(f"Thread execution failed for {name}: {e}", "Threading")
 
 def run(
-        source_dir: Path, output_dir: Path, prompt_id: str, prompt_yaml_path: Path, model: str, api: str | None, debug: bool, smell: bool, workers: int = 1, **kwargs
+        source_dir: Path, output_dir: Path, prompt_id: str, prompt_yaml_path: Path, model: str, api: str | None, debug: bool, smell: bool, workers: int = 1, test_threshold: float = 1.1, **kwargs
 ) -> None:
     """
     Top-level orchestrator for the fuzzing harness generation pipeline.
@@ -175,9 +176,9 @@ def run(
         log(f"Loading prompt template: {prompt_id}", level="DEBUG", debug=debug)
         temperature, _, template = atherisai.load_prompt_data(prompt_id, prompt_yaml_path, debug)
         
-        function_code_snippets = find_function_candidates(source_dir, debug=debug, smell=smell)
+        function_code_snippets = find_function_candidates(source_dir, debug=debug, smell=smell, test_threshold=test_threshold)
         function_prompts = prompt_function_candidates(template, function_code_snippets, debug=debug)
-        class_code_snippets = find_class_candidates(source_dir, debug=debug, smell=smell)
+        class_code_snippets = find_class_candidates(source_dir, debug=debug, smell=smell, test_threshold=test_threshold)
         class_prompts = prompt_class_candidates(template, class_code_snippets, debug=debug)
 
         analysis_df = create_starting_dataframe()
@@ -193,11 +194,9 @@ def run(
                 "full_prompt": function_prompts[name],
                 "fuzz_target": body,
                 "created_harness": "",
-                "harness_valid_syntax": False,
                 **{col: 0 for col in analysis_df.columns if col not in [
                     "candidate_name", "entity_type", "model", "temperature", 
-                    "prompt_id", "full_prompt", "fuzz_target", "created_harness", 
-                    "harness_valid_syntax"
+                    "prompt_id", "full_prompt", "fuzz_target", "created_harness"
                 ]}
             })
         for name, body in class_code_snippets.items():
@@ -210,11 +209,9 @@ def run(
                 "full_prompt": class_prompts[name],
                 "fuzz_target": body["class_body"] + "\n\n#FOCUSING-ON\n\n" + body["function_body"],
                 "created_harness": "",
-                "harness_valid_syntax": False,
                 **{col: 0 for col in analysis_df.columns if col not in [
                     "candidate_name", "entity_type", "model", "temperature", 
-                    "prompt_id", "full_prompt", "fuzz_target", "created_harness", 
-                    "harness_valid_syntax"
+                    "prompt_id", "full_prompt", "fuzz_target", "created_harness"
                 ]}
             })
         if rows:

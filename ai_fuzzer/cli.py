@@ -139,19 +139,19 @@ Examples:
                         help="Filter out low-maintainability code using Radon.")
     parser.add_argument("-w", "--workers", type=validate_workers, default=1,
                         help=f"Number of concurrent generation threads (default: 1). Max: {os.cpu_count() or 1}")
+    parser.add_argument("-tt", "--test-threshold", type=float, default=1.1,
+                        help="Threshold for filtering out code used for testing, saves on tokens.\n(default: 1.1 meaning it will always be off\n. Higher values mean you filter less code, lower values filter more).\n ")
 
     args = parser.parse_args()
 
     if not args.src_dir and not args.url:
         parser.error("You must provide either --src-dir, --url, or both.")
 
-    # Initialize logger
     init_logger(args.output_dir)
 
     # Handle URL cloning
     if args.url:
         parsed_url = urlparse(args.url)
-        # Clean URL by removing query parameters and fragments
         clean_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
         repo_name = Path(parsed_url.path).stem
         
@@ -162,7 +162,6 @@ Examples:
             # If only url is provided, clone into ~/Downloads
             target_path = Path.home() / "Downloads" / repo_name
         
-        # Ensure parent exists
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
         if target_path.exists() and any(target_path.iterdir()):
@@ -176,25 +175,20 @@ Examples:
                 log(f"Failed to clone repository: {e}", level="ERROR")
                 sys.exit(1)
         
-        # Update src_dir to the actual clone location for the rest of the app
+        #update src_dir to the actual clone location for the rest of the app
         args.src_dir = target_path
 
-    # Validate source directory exists after potential clone
     if not args.src_dir.is_dir():
         log(f"Source directory '{args.src_dir}' does not exist or is not a directory.", level="ERROR")
         sys.exit(1)
 
-    # Validate model
     try:
         litellm.get_llm_provider(args.model)
     except Exception as e:
         log(f"Unrecognized model: {args.model}. {e}", level="ERROR")
         sys.exit(1)
 
-    # Resolve API Key
     api_key = resolve_api_key(args.api_key, args.model, args.verbose)
-
-    # Prepare extra parameters
     extra_params = getattr(args, 'extra_model_prompts', {}) or {}
 
     try:
@@ -208,6 +202,7 @@ Examples:
             debug=args.verbose,
             smell=args.smell,
             workers=args.workers,
+            test_threshold=args.test_threshold,
             **extra_params
         )
     except Exception as e:

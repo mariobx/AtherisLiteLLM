@@ -5,6 +5,7 @@ from ai_fuzzer.atherislitellm.fetch import fetch_docs
 import re
 from ai_fuzzer.atherislitellm.logger.logs import log
 import litellm
+from litellm import token_counter
 
 def extract_code_blocks(text):
     """Extract fenced code blocks from text and return them joined."""
@@ -28,7 +29,7 @@ def format_prompt(template: str, target_func: str, debug=False) -> str:
     doc_block = f"{fetch_docs.fetch_atheris_readme(debug)}\n\n{fetch_docs.fetch_atheris_hooking_docs(debug)}"
     return template.replace("{{CODE}}", target_func).replace("{{DOCS}}", doc_block)
 
-def get_response(client: dict, temperature: float, full_prompt: str, debug: bool = False, **kwargs) -> str | None:
+def get_response(client: dict, temperature: float, full_prompt: str, debug: bool = False, **kwargs) -> Tuple[str | None, int | None]:
     """Prepare a prompt, call LLM via LiteLLM to generate content, and return the text."""
     log(f"Calling LLM ({client['model']})...", level="DEBUG", debug=debug)
     
@@ -43,10 +44,11 @@ def get_response(client: dict, temperature: float, full_prompt: str, debug: bool
         )
 
         content = getattr(getattr(getattr(response, "choices", [None])[0], "message", None), "content", None)
+        tokens = token_counter(model=client["model"], messages=[{"role": "user", "content": full_prompt}])
         if not content:
             log("Received empty content from model.", level="ERROR")
-        return content
+        return content, tokens
 
     except Exception as e:
         log(f"LiteLLM error: {e}", level="ERROR")
-        return None
+        return None, None

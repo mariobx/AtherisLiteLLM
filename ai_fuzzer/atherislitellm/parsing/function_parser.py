@@ -3,6 +3,7 @@ import ast
 from typing import List
 from pathlib import Path
 from ai_fuzzer.atherislitellm.logger.logs import log
+from ai_fuzzer.atherislitellm.parsing.test_probability import CodeContextAnalyzer, is_likely_test
 
 def is_virtualenv_dir(path, debug=False):
     """Returns True if the given directory looks like a Python virtual environment."""
@@ -21,7 +22,10 @@ def get_python_file_paths(directory_path, debug=False):
     python_files: List[str] = []
     try:
         for root, dirs, files in os.walk(directory_path):
-            dirs[:] = [d for d in dirs if not is_virtualenv_dir(os.path.join(root, d), debug)]
+            dirs[:] = [
+                d for d in dirs 
+                if d.lower() not in {"test", "docs"} and not is_virtualenv_dir(os.path.join(root, d), debug)
+            ]
             for file in files:
                 if file.endswith(".py"):
                     full_path = os.path.join(root, file)
@@ -34,7 +38,7 @@ def get_python_file_paths(directory_path, debug=False):
         
     return python_files
 
-def extract_functions(path: str | Path, debug=False) -> dict[str, str]:
+def extract_functions(path: str | Path, debug=False, test_threshold: float = 1.1) -> dict[str, str]:
     """Parses a Python file and extracts top-level functions."""
     path = Path(path)
     if not path.is_file():
@@ -50,9 +54,14 @@ def extract_functions(path: str | Path, debug=False) -> dict[str, str]:
         log(f"Failed to parse {path.name}: {e}", level="ERROR")
         return {}
 
+    analyzer = CodeContextAnalyzer()
+    analyzer.visit(tree)
+
     functions = {}
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if is_likely_test(node, threshold=test_threshold, analyzer=analyzer):
+                continue
             source = ast.get_source_segment(source_code, node)
             if source:
                 functions[node.name] = source
@@ -60,7 +69,7 @@ def extract_functions(path: str | Path, debug=False) -> dict[str, str]:
     log(f"Extracted {len(functions)} functions from {path.name}", level="DEBUG", debug=debug)
     return functions
 
-def extract_classes(path: str | Path, debug=False):
+def extract_classes(path: str | Path, debug=False, test_threshold: float = 1.1):
     """Parses a Python file and extracts classes and their methods."""
     path = Path(path)
     if not path.is_file():
@@ -76,17 +85,24 @@ def extract_classes(path: str | Path, debug=False):
         log(f"Failed to parse {path.name}: {e}", level="ERROR")
         return {}, {}
 
+    analyzer = CodeContextAnalyzer()
+    analyzer.visit(tree)
+
     classes_in_file = {}
     functions_inside_classes = {}
 
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
+            if is_likely_test(node, threshold=test_threshold, analyzer=analyzer):
+                continue
             cls_name = node.name
             cls_body = ast.get_source_segment(source_code, node)
             classes_in_file[cls_name] = cls_body
             methods = []
             for item in node.body:
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if is_likely_test(item, threshold=test_threshold, analyzer=analyzer):
+                        continue
                     method_source = ast.get_source_segment(source_code, item)
                     methods.append((item.name, method_source))
             

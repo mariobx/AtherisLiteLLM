@@ -338,3 +338,196 @@ codegemma_3:
 
     Synthesize the structure-aware Atheris fuzzing harness featuring a custom mutator tailored exactly to the grammatical requirements of the target code.<end_of_turn>
     <start_of_turn>model
+
+##Deep research prompts
+atheris_strict_api_mapper:
+  <<: *defaults
+  temperature: 0.1
+  description: >
+    A highly deterministic prompt designed to strictly map Python target function signatures to official FuzzedDataProvider methods. 
+    It includes inline dynamic dependency management via subprocess and forces the model to respect anticipated parser exceptions.
+  template: |
+    <role>
+    You are an elite vulnerability researcher and expert software engineer specializing in automated testing and coverage-guided fuzzing with the Python Atheris framework. 
+    </role>
+
+    <task>
+    Your objective is to create a complete, self-contained, and immediately executable Python fuzzing harness for the provided target function. 
+    The script must bootstrap its own dependencies, correctly instrument the target, precisely map fuzzer bytes to strongly-typed arguments, and gracefully handle expected parser rejections.
+    </task>
+
+    <instructions>
+    Execute your task strictly following these sequential phases. Do not hallucinate methods outside of the provided API reference.
+
+    1. **Self-Bootstrapping Dependencies:** 
+       At the absolute top of the Python script (before any standard imports), write programmatic Python code to execute a shell command that installs required dependencies. 
+       Use `import subprocess` and `subprocess.check_call([sys.executable, "-m", "pip", "install", "setuptools", "wheel", "atheris", "<any_target_packages>"])`. 
+       This MUST occur before `import atheris` or the target module.
+
+    2. **Instrumentation and Imports:**
+       Import `atheris` and `sys`.
+       Import the target function and its module exclusively within a `with atheris.instrument_imports():` block to ensure libFuzzer tracks coverage paths.
+
+    3. **Target Function Integration:**
+       Include the complete target function code within the script so it is entirely self-contained.
+
+    4. **Input Mapping Strategy (FuzzedDataProvider):**
+       Analyze the target function's signature. Inside the `TestOneInput(data)` function, instantiate `fdp = atheris.FuzzedDataProvider(data)`.
+       Using ONLY the methods listed in the `<api_reference>`, consume the byte stream to generate the precise data types required by the target function.
+       Enforce maximum boundaries for strings and collections to prevent Out-Of-Memory (OOM) execution halts (e.g., maximum string length of 4096).
+       Use `ConsumeUnicodeNoSurrogates` for all standard Python string inputs to prevent immediate UTF-16 surrogate pair exceptions.
+
+    5. **Exception Handling Architecture:**
+       Wrap the target function invocation in a `try...except` block. 
+       You must catch and `pass` on expected, trivial exceptions (e.g., `ValueError`, `TypeError` for bad formats).
+       You must catch and `raise` critical errors that indicate true vulnerabilities (e.g., `RuntimeError`, `MemoryError`, `AssertionError`).
+
+    6. **Atheris Initialization:**
+       Conclude the script with an `if __name__ == "__main__":` block.
+       Invoke `atheris.Setup(sys.argv, TestOneInput, enable_python_coverage=True)`. The `enable_python_coverage=True` parameter is mandatory for opcode tracking in Python 3.8+.
+       Start the fuzzer with `atheris.Fuzz()`.
+
+    7. **Output Constraints:**
+       Provide your final output as ONLY a single, fully-commented Python code block. Do not provide conversational text outside the ```python ``` block.
+    </instructions>
+
+    <api_reference>
+    You are strictly restricted to using the following `FuzzedDataProvider` methods:
+    - `ConsumeBytes(count: int)`: Consume count bytes.
+    - `ConsumeUnicode(count: int)`: Consume unicode characters (may contain surrogates).
+    - `ConsumeUnicodeNoSurrogates(count: int)`: Consume unicode characters safely (no surrogates).
+    - `ConsumeInt(int: bytes)`: Consume a signed integer.
+    - `ConsumeUInt(int: bytes)`: Consume an unsigned integer.
+    - `ConsumeIntInRange(min: int, max: int)`: Consume an integer bounded by min/max.
+    - `ConsumeFloat()`: Consume arbitrary float.
+    - `ConsumeRegularFloat()`: Consume normal float (no NaN/Inf).
+    - `PickValueInList(l: list)`: Randomly pick an item from a predefined list.
+    - `ConsumeIntList(count: int, bytes: int)`: Consume a list of count integers of size bytes.
+    - `ConsumeFloatList(count: int)`: Consume a list of arbitrary floating-point values.
+    - `ConsumeProbabilityList(count: int)`: Consume a list of floats in the range .
+    - `ConsumeBool()`: Consume True or False.
+    </api_reference>
+
+    <context_documents>
+    Before proceeding, analyze the Atheris framework documentation provided below:
+    {{DOCS}}
+    </context_documents>
+
+    <target>
+    Analyze and generate a harness for the following target function:
+    {{CODE}}
+    </target>
+
+
+atheris_recursive_structure_generator:
+  <<: *defaults
+  temperature: 0.2
+  description: >
+    A prompt specialized for target functions expecting complex, recursive data structures (e.g., JSON, YAML, nested dataclasses). 
+    It instructs the LLM to build algorithmic generators using FuzzedDataProvider's entropy, maximizing deep logic branch discovery.
+  template: |
+    <role>
+    You are a principal security engineer specializing in structured fuzz testing. You excel at bypassing shallow validation layers by algorithmically synthesizing highly complex, structurally valid input types from raw fuzzer entropy.
+    </role>
+
+    <task>
+    Your task is to write an Atheris fuzzing harness that consumes raw bytes and programmatically builds a complex, nested Python data structure (such as a dictionary, list of objects, or abstract syntax tree) matching the required input schema of the target function.
+    </task>
+
+    <instructions>
+    1. **Dependency Execution:** 
+       Write Python `subprocess` logic at line 1 of the code to dynamically `pip install setuptools wheel atheris` and any other module required by the target function. Ensure this executes before module imports.
+    
+    2. **Coverage-Guided Imports:** 
+       Import libraries inside `with atheris.instrument_imports():` to map module execution paths accurately. Include the self-contained target function logic.
+
+    3. **Structured Fuzzing Generators:**
+       Do not feed raw bytes directly into the target. Instead, create helper functions (e.g., `generate_complex_dict(fdp)`) that accept the `FuzzedDataProvider`.
+       Use `fdp.ConsumeIntInRange(0, 20)` to determine loop iteration limits for building lists or dictionaries. Never use `sys.maxsize` for limits to prevent Out-Of-Memory conditions.
+       Use `fdp.ConsumeUnicodeNoSurrogates(256)` to generate valid string keys.
+       Use `fdp.PickValueInList([generate_string, generate_int, generate_bool])` to dynamically select sub-types, constructing a structurally valid but highly randomized recursive payload.
+
+    4. **Target Execution and Validation:**
+       Inside `TestOneInput(data)`, instantiate `fdp = atheris.FuzzedDataProvider(data)`.
+       Call your helper generation functions to build the structured argument.
+       Pass the argument to the target function within a strict `try...except` block, discarding format-level validation errors but raising deep logical or systemic faults.
+
+    5. **Initialization Requirements:**
+       Always initialize the fuzzer at the bottom of the script using:
+       `atheris.Setup(sys.argv, TestOneInput, enable_python_coverage=True)`
+       `atheris.Fuzz()`
+
+    6. **Format Constraints:**
+       Provide the output exclusively as a valid, self-contained Python script inside standard markdown code blocks. Explain your structural generation logic heavily via inline python comments.
+    </instructions>
+
+    <context_documents>
+    Reference documentation:
+    {{DOCS}}
+    </context_documents>
+
+    <target_function>
+    Target to fuzz:
+    {{CODE}}
+    </target_function>
+
+atheris_ossfuzz_differential_harness:
+  <<: *defaults
+  temperature: 0.15
+  description: >
+    A specialized prompt aimed at producing enterprise-grade OSS-Fuzz compliant harnesses. 
+    It excels at differential fuzzing setups, property-based hypothesis integrations, and strict environment bootstrapping.
+  template: |
+    <role>
+    You are an elite DevSecOps architect contributing to Google's OSS-Fuzz project. You specialize in compiling, instrumenting, and writing robust Python fuzz targets using Atheris, libFuzzer, Hypothesis, and AddressSanitizer.
+    </role>
+
+    <task>
+    Produce a completely self-contained Python fuzzing harness for the provided target code. The harness must be production-ready, mimicking the high-assurance quality expected in OSS-Fuzz differential testing deployments.
+    </task>
+
+    <instructions>
+    <step_1_bootstrapping>
+    The script must be executable in a vanilla Python environment. Before any external imports, implement dynamic dependency management:
+    ```python
+    import os
+    import sys
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "setuptools", "wheel", "atheris", "hypothesis"])
+    ```
+    </step_1_bootstrapping>
+
+    <step_2_instrumentation>
+    Import the required modules. Use the `atheris.instrument_imports()` context manager for the target module. Include the literal code of the target function to satisfy self-containment.
+    </step_2_instrumentation>
+
+    <step_3_harness_architecture>
+    Define `def TestOneInput(data):`. 
+    Initialize `fdp = atheris.FuzzedDataProvider(data)`.
+    If the target function acts as a parser, deserializer, or decoder, focus on testing its boundary constraints using `fdp.ConsumeBytes()` or `fdp.ConsumeUnicodeNoSurrogates()`.
+    </step_3_harness_architecture>
+
+    <step_4_differential_analysis_and_exceptions>
+    Execute the target function. If the target function has a known equivalent (e.g., a pure Python implementation vs a native C-extension), construct a differential fuzzing state: pass the generated input to both, and use strict `assert` statements to ensure their outputs are identical.
+    Wrap executions in a `try...except` block. Ignore domain-specific parsing exceptions, but explicitly fail on unhandled native exceptions or differential state mismatches.
+    </step_4_differential_analysis_and_exceptions>
+
+    <step_5_execution>
+    Ensure opcode coverage is active to track fundamental program states:
+    ```python
+    if __name__ == "__main__":
+        atheris.Setup(sys.argv, TestOneInput, enable_python_coverage=True)
+        atheris.Fuzz()
+    ```
+    </step_5_execution>
+    
+    Output strictly the commented python code inside a single code block. No conversational text.
+    </instructions>
+
+    <documentation_context>
+    {{DOCS}}
+    </documentation_context>
+
+    <source_code>
+    {{CODE}}
+    </source_code>

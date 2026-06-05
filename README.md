@@ -21,6 +21,7 @@ This project creates a LLM-assisted Python fuzzing harness generator designed to
   - `-d`, `--debug`: Enable verbose logging.
   - `-sm`, `--smell`: Filter out low-maintainability code using Radon.
   - `-w`, `--workers`: Number of concurrent generation threads.
+  - `-tt`, `--test-threshold`: Threshold for filtering out code used for testing to save on tokens (default: `1.1` which disables the filter). Higher values filter less code, lower values filter more.
 
 # Examples:
   1. **Clone from a URL to default Downloads directory:** \
@@ -65,4 +66,9 @@ This project creates a LLM-assisted Python fuzzing harness generator designed to
     -m ollama/codegemma:7b \
     -d \
     -sm \
-    -e project=fuzz-test \
+    -e project=fuzz-test
+
+# Output and Analysis:
+All results are saved into a structured, timestamped subfolder in your output directory:
+  - **Harness Files**: The generated self-contained Atheris fuzzing harnesses.
+  - **analysis.csv**: A detailed log capturing comprehensive metadata for all discovered code candidates. This report tracks function names, complexity rankings, maintainability indexes, the generated harness code, and API tokens used tokens_used per prompt.

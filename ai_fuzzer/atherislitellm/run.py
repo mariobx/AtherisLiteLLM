@@ -97,7 +97,7 @@ def process_candidate(name: str, full_prompt: str, client: dict, run_dir: Path, 
     """
     try:
         log(f"Starting generation for: {name}", level="DEBUG", debug=debug)
-        response, tokens = atherisai.get_response(
+        response = atherisai.get_response(
             client=client,
             temperature=temperature,
             full_prompt=full_prompt,
@@ -105,11 +105,12 @@ def process_candidate(name: str, full_prompt: str, client: dict, run_dir: Path, 
             **kwargs
         )
         if response:
-            block = atherisai.extract_code_blocks(response)
+            response['name'] = name
+            block = atherisai.extract_code_blocks(response["content"])
             if block:
                 file_saver.save_to_file(name, block, run_dir, debug=debug)
-                log(f"Generated harness: {name}", level="INFO")
-                return name, block, tokens
+                log(f"Generated harness: {response['name']}", level="INFO")
+                return response
             else:
                 report_failure(f"No code block found in LLM response for: {name}", "Generation")
         else:
@@ -140,15 +141,21 @@ def run_multi_threaded_generation(
         }
         
         for future in concurrent.futures.as_completed(futures):
-            name = futures[future]
+            result = future.result()
             try:
-                result = future.result()
                 if result:
-                    returned_name, block, tokens = result
-                    analysis_df.loc[analysis_df['candidate_name'] == returned_name, 'created_harness'] = block
-                    analysis_df.loc[analysis_df['candidate_name'] == returned_name, 'tokens_used'] = tokens
+                    analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'model'] = result['model']
+                    analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'created_harness'] = result['content']
+                    analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'input_tokens'] = result['input_tokens']
+                    analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'output_tokens'] = result['output_tokens']
+                    analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'total_tokens'] = result['total_tokens']
+                    analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'time_taken'] = result['time_taken']
+                    
+                    #update CSV incrementally to avoid progress loss on crash
+                    #this runs on a single thread, there is no issue with constantly calling .to_csv
+                    analysis_df.to_csv(run_dir / "analysis.csv", index=False)
             except Exception as e:
-                report_failure(f"Thread execution failed for {name}: {e}", "Threading")
+                report_failure(f"Thread execution failed for {result['name']}: {e}", "Threading")
 
 def run(
         source_dir: Path, output_dir: Path, prompt_id: str, prompt_yaml_path: Path, model: str, api: str | None, debug: bool, smell: bool, workers: int = 1, test_threshold: float = 1.1, **kwargs
@@ -165,6 +172,7 @@ def run(
     }
 
     try:
+        #create output directory
         output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%m-%d-%y_%I-%M-%S%p").lower()
         safe_model_str = model.strip().replace("/", ".").replace(":", ".")
@@ -173,9 +181,11 @@ def run(
         run_dir.mkdir(parents=True, exist_ok=True)
         log(f"Output directory initialized at: {run_dir}", level="DEBUG", debug=debug)
 
+        #load the prompt template
         log(f"Loading prompt template: {prompt_id}", level="DEBUG", debug=debug)
         temperature, _, template = atherisai.load_prompt_data(prompt_id, prompt_yaml_path, debug)
         
+        #find all function and class candidates
         function_code_snippets = find_function_candidates(source_dir, debug=debug, smell=smell, test_threshold=test_threshold)
         function_prompts = prompt_function_candidates(template, function_code_snippets, debug=debug)
         class_code_snippets = find_class_candidates(source_dir, debug=debug, smell=smell, test_threshold=test_threshold)
@@ -184,6 +194,7 @@ def run(
         analysis_df = create_starting_dataframe()
         rows = []
 
+        #iterate through all function candidates, dict for pandas dataframe
         for name, body in function_code_snippets.items():
             rows.append({
                 "candidate_name": name,
@@ -191,14 +202,17 @@ def run(
                 "model": model.strip() if model else "",
                 "temperature": temperature,
                 "prompt_id": prompt_id,
+                "template_prompt": template,
                 "full_prompt": function_prompts[name],
                 "fuzz_target": body,
                 "created_harness": "",
                 **{col: 0 for col in analysis_df.columns if col not in [
                     "candidate_name", "entity_type", "model", "temperature", 
-                    "prompt_id", "full_prompt", "fuzz_target", "created_harness"
+                    "prompt_id", "template_prompt", "full_prompt", "fuzz_target", "created_harness"
                 ]}
             })
+        
+        #iterate through all class candidates, dict for pandas dataframe
         for name, body in class_code_snippets.items():
             rows.append({
                 "candidate_name": name,
@@ -206,14 +220,17 @@ def run(
                 "model": model.strip() if model else "",
                 "temperature": temperature,
                 "prompt_id": prompt_id,
+                "template_prompt": template,
                 "full_prompt": class_prompts[name],
                 "fuzz_target": body["class_body"] + "\n\n#FOCUSING-ON\n\n" + body["function_body"],
                 "created_harness": "",
                 **{col: 0 for col in analysis_df.columns if col not in [
                     "candidate_name", "entity_type", "model", "temperature", 
-                    "prompt_id", "full_prompt", "fuzz_target", "created_harness"
+                    "prompt_id", "template_prompt", "full_prompt", "fuzz_target", "created_harness"
                 ]}
             })
+        
+        #add all the information to the dataframe
         if rows:
             analysis_df = pd.concat([analysis_df, pd.DataFrame(rows)], ignore_index=True)
         
@@ -221,6 +238,7 @@ def run(
         
         log(f"Discovery phase complete. Found {len(function_code_snippets)} functions and {len(class_code_snippets)} classes.", level="INFO")
         
+        #delete all the variables that are not needed to save memory, since this will be running for a while
         del function_code_snippets
         del class_code_snippets
         del function_prompts
@@ -231,6 +249,10 @@ def run(
             log("No valid functions or classes found for fuzzing.", level="INFO")
             return
 
+        # Save initial dataframe state before generation starts
+        analysis_df.to_csv(run_dir / "analysis.csv", index=False)
+
+        #run the multi threaded harness generation
         run_multi_threaded_generation(
             all_fuzzing_candidates=all_fuzzing_candidates,
             client=client,
@@ -241,8 +263,6 @@ def run(
             analysis_df=analysis_df,
             **kwargs
         )
-
-        analysis_df.to_csv(run_dir / "analysis.csv", index=False)
 
         log(f"Success. All harnesses saved in: {run_dir}", level="INFO")
 

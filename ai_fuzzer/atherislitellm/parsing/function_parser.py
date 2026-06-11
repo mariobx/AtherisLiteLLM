@@ -3,7 +3,7 @@ import ast
 from typing import List
 from pathlib import Path
 from ai_fuzzer.atherislitellm.logger.logs import log
-from ai_fuzzer.atherislitellm.parsing.test_probability import CodeContextAnalyzer, is_likely_test
+from ai_fuzzer.atherislitellm.parsing.test_probability import TestCodeClassifier, is_test_code
 
 def is_virtualenv_dir(path, debug=False):
     """Returns True if the given directory looks like a Python virtual environment."""
@@ -54,13 +54,10 @@ def extract_functions(path: str | Path, debug=False, test_threshold: float = 1.1
         log(f"Failed to parse {path.name}: {e}", level="ERROR")
         return {}
 
-    analyzer = CodeContextAnalyzer()
-    analyzer.visit(tree)
-
     functions = {}
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if is_likely_test(node, threshold=test_threshold, analyzer=analyzer):
+            if is_test_code(node, threshold=test_threshold):
                 continue
             source = ast.get_source_segment(source_code, node)
             if source:
@@ -85,15 +82,12 @@ def extract_classes(path: str | Path, debug=False, test_threshold: float = 1.1):
         log(f"Failed to parse {path.name}: {e}", level="ERROR")
         return {}, {}
 
-    analyzer = CodeContextAnalyzer()
-    analyzer.visit(tree)
-
     classes_in_file = {}
     functions_inside_classes = {}
 
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
-            if is_likely_test(node, threshold=test_threshold, analyzer=analyzer):
+            if is_test_code(node, threshold=test_threshold):
                 continue
             cls_name = node.name
             cls_body = ast.get_source_segment(source_code, node)
@@ -101,7 +95,7 @@ def extract_classes(path: str | Path, debug=False, test_threshold: float = 1.1):
             methods = []
             for item in node.body:
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    if is_likely_test(item, threshold=test_threshold, analyzer=analyzer):
+                    if is_test_code(item, threshold=test_threshold):
                         continue
                     method_source = ast.get_source_segment(source_code, item)
                     methods.append((item.name, method_source))

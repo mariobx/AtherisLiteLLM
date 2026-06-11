@@ -1,177 +1,202 @@
 import ast
-from typing import Dict, Set
-from ai_fuzzer.atherislitellm.logger.logs import log, report_failure
+from ai_fuzzer.atherislitellm.logger.logs import log
 
-class CodeContextAnalyzer(ast.NodeVisitor):
+class TestCodeClassifier(ast.NodeVisitor):
     """
-    AST visitor that traverses a module to collect file-level test context 
-    and assigns confidence scores to classes and functions.
+    A sophisticated static analysis engine designed to evaluate raw strings of Python 
+    code and heuristically determine if the code represents testing artifacts.
+    
+    This class utilizes the standard library's ast module to traverse the Abstract 
+    Syntax Tree without executing the code. It calculates a normalized heuristic 
+    score based on testing framework signatures (unittest, pytest), decorators, 
+    imports, and assertions.
     """
+
+    # Empirical Heuristic Weights
+    WEIGHT_TESTCASE_INHERITANCE = 1.0
+    WEIGHT_TEST_NAMING_CONVENTION = 0.8
+    WEIGHT_TEST_DECORATOR = 0.8
+    WEIGHT_TEST_IMPORT = 0.6
+    WEIGHT_MOCK_USAGE = 0.6
+    WEIGHT_ASSERTION_PRESENCE = 0.4
+
+    # Topologically significant testing signatures
+    TEST_DECORATORS = {'fixture', 'patch', 'parametrize', 'mock', 'mark'}
+    TEST_IMPORTS = {'pytest', 'unittest', 'mock', 'magicmock', 'patch', 'nose'}
+    MOCK_OBJECTS = {'MagicMock', 'Mock', 'AsyncMock', 'patch'}
+
     def __init__(self):
-        self.has_test_imports = False
-        self.test_frameworks = {"pytest", "unittest", "mock", "hypothesis", "freezegun", "responses"}
-        self.class_scores: Dict[str, float] = {}
-        self.function_scores: Dict[str, float] = {}
-        self.current_class = None
+        super().__init__()
+        self.score = 0.0
+        self.total_nodes = 0
+        self.assert_count = 0
 
-        self.test_prefixes = ("test_", "mock_", "dummy_")
-        self.test_suffixes = ("_test", "_mock")
-        self.test_decorators = {"fixture", "patch", "mock", "setup", "teardown", "pytest"}
-        self.test_bases = {"TestCase", "IsolatedAsyncioTestCase"}
-        self.test_framework_calls = {
-            "assertEqual", "assertTrue", "assertFalse", "assertRaises", 
-            "assertIsNone", "assertIn", "pytest.raises", "pytest.approx"
-        }
+    def _add_score(self, weight: float, reason: str):
+        """Accumulates the heuristic score and emits telemetry for the pipeline."""
+        self.score += weight
+        log(f"Test Classifier Evidence: {weight} - {reason}")
 
-    def visit_Module(self, node: ast.Module):
-        # Scan for test imports to establish file-level context
-        for child in ast.walk(node):
-            if isinstance(child, ast.Import):
-                for alias in child.names:
-                    if any(fw in alias.name.lower() for fw in self.test_frameworks):
-                        self.has_test_imports = True
-            elif isinstance(child, ast.ImportFrom):
-                if child.module and any(fw in child.module.lower() for fw in self.test_frameworks):
-                    self.has_test_imports = True
-        
-        # Traverse the rest of the AST
-        self.generic_visit(node)
+    def _extract_name(self, node: ast.AST) -> str:
+        """
+        Recursively extracts the string identifier from AST Name, Attribute, 
+        and Call nodes. Critical for unrolling complex decorators and base classes.
+        """
+        if isinstance(node, ast.Name):
+            return node.id
+        elif isinstance(node, ast.Attribute):
+            return node.attr
+        elif isinstance(node, ast.Call):
+            # Recursively unwrap the function being called
+            return self._extract_name(node.func)
+        return ""
 
     def visit_ClassDef(self, node: ast.ClassDef):
-        score = 0.0
+        """Analyzes class definitions for framework inheritance and naming conventions."""
+        self.total_nodes += 1
         
-        if node.name.startswith("Test") or node.name.endswith("Test"):
-            score += 0.4
-            
-        for base in node.bases:
-            base_name = getattr(base, "id", getattr(base, "attr", ""))
-            if base_name in self.test_bases:
-                score = 1.0  # Absolute structural proof
-        
-        # Composition heuristics: analyze methods inside
-        method_count = 0
-        test_method_count = 0
-        for item in node.body:
-            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                method_count += 1
-                if self._is_likely_test_method_name_or_body(item):
-                    test_method_count += 1
-                    
-        if method_count > 0 and (test_method_count / method_count) >= 0.5:
-            score = max(score, 1.0)
-            
-        self.class_scores[node.name] = score
-        
-        # Retain parent context for nested methods
-        previous_class = self.current_class
-        self.current_class = node.name
-        self.generic_visit(node)
-        self.current_class = previous_class
+        # 1. Evaluate pytest naming convention (starts with 'Test')
+        if node.name.startswith("Test"):
+            # Pytest dictates that test classes must lack an __init__ constructor
+            has_init = any(
+                isinstance(child, ast.FunctionDef) and child.name == "__init__" 
+                for child in node.body
+            )
+            if not has_init:
+                self._add_score(
+                    self.WEIGHT_TEST_NAMING_CONVENTION, 
+                    f"Class '{node.name}' matches pytest convention without __init__."
+                )
 
-    def _is_likely_test_method_name_or_body(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-        lower_name = node.name.lower()
-        if lower_name.startswith(self.test_prefixes) or lower_name.endswith(self.test_suffixes):
-            return True
-        for dec in node.decorator_list:
-            try:
-                dec_name = getattr(dec, "id", getattr(getattr(dec, "func", None), "id", ""))
-            except Exception as e:
-                log(f"Error getting decorator name: {e}", level="ERROR", debug=True)
-                continue
-            if any(td in dec_name.lower() for td in self.test_decorators):
-                return True
-        return False
+        # 2. Evaluate unittest.TestCase inheritance models
+        for base in node.bases:
+            base_name = self._extract_name(base)
+            if base_name == "TestCase":
+                self._add_score(
+                    self.WEIGHT_TESTCASE_INHERITANCE, 
+                    f"Class '{node.name}' inherits directly or via module from TestCase."
+                )
+
+        self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
-        self._analyze_function(node)
+        """Analyzes function definitions for lexical conventions and framework decorators."""
+        self.total_nodes += 1
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
-        self._analyze_function(node)
+        # 1. Evaluate pytest/unittest functional naming conventions
+        if node.name.startswith("test_") or node.name.endswith("_test"):
+            self._add_score(
+                self.WEIGHT_TEST_NAMING_CONVENTION, 
+                f"Function '{node.name}' matches standard test naming convention."
+            )
 
-    def _analyze_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef):
-        score = 0.0
+        # 2. Extract and deeply analyze the decorator list
+        for decorator in node.decorator_list:
+            dec_name = self._extract_name(decorator).lower()
+            if any(test_dec in dec_name for test_dec in self.TEST_DECORATORS):
+                self._add_score(
+                    self.WEIGHT_TEST_DECORATOR, 
+                    f"Function '{node.name}' utilizes framework decorator '@{dec_name}'."
+                )
+
+        self.generic_visit(node)
         
-        lower_name = node.name.lower()
-        if lower_name.startswith(self.test_prefixes) or lower_name.endswith(self.test_suffixes):
-            score += 0.5
-        elif lower_name == "test":
-            score += 0.6
-            
-        for dec in node.decorator_list:
-            try:
-                dec_name = getattr(dec, "id", getattr(getattr(dec, "func", None), "id", ""))
-            except Exception as e:
-                log(f"Error getting decorator name: {e}", level="ERROR", debug=True)
-                continue
-            if any(td in dec_name.lower() for td in self.test_decorators):
-                score += 0.6
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef):
+        """Processes asynchronous functions identically to standard synchronous functions."""
+        self.visit_FunctionDef(node)
 
-        raw_assert_count = 0
-        framework_assert_count = 0
-        mock_calls = 0
-        total_statements = len(node.body)
-
-        for child in ast.walk(node):
-            if isinstance(child, ast.Assert):
-                raw_assert_count += 1
-            elif isinstance(child, ast.Call):
-                if isinstance(child.func, ast.Attribute):
-                    if child.func.attr in self.test_framework_calls:
-                        framework_assert_count += 1
-                elif isinstance(child.func, ast.Name):
-                    if "mock" in child.func.id.lower() or child.func.id == "patch":
-                        mock_calls += 1
-
-        score += (framework_assert_count * 0.4)
-        score += (mock_calls * 0.3)
-
-        if total_statements > 0:
-            assert_density = raw_assert_count / total_statements
-            if assert_density > 0.3:
-                score += 0.5
-            elif raw_assert_count > 0:
-                score += 0.1 * raw_assert_count
-
-        if self.has_test_imports:
-            score *= 1.5
-
-        if self.current_class:
-            try:
-                if self.class_scores.get(self.current_class, 0.0) >= 0.4:
-                    score *= 1.8
-            except Exception as e:
-                log(f"Error getting class score: {e}", level="ERROR", debug=True)
-
-        self.function_scores[node.name] = min(1.0, score)
+    def visit_Import(self, node: ast.Import):
+        """Analyzes standard imports for testing framework dependencies."""
+        self.total_nodes += 1
+        for alias in node.names:
+            if alias.name.lower() in self.TEST_IMPORTS:
+                self._add_score(
+                    self.WEIGHT_TEST_IMPORT, 
+                    f"Explicit module import of testing framework: '{alias.name}'."
+                )
         self.generic_visit(node)
 
-def calculate_test_probability(node: ast.AST, analyzer: CodeContextAnalyzer | None = None) -> float:
-    """
-    Evaluates an AST node (Function or Class) and returns a probability [0.0 - 1.0]
-    that the node is test code rather than application logic.
-    """
-    if analyzer is not None:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return analyzer.function_scores.get(node.name, 0.0)
-        elif isinstance(node, ast.ClassDef):
-            return analyzer.class_scores.get(node.name, 0.0)
+    def visit_ImportFrom(self, node: ast.ImportFrom):
+        """Analyzes specific 'from X import Y' statements for testing dependencies."""
+        self.total_nodes += 1
+        if node.module and node.module.lower() in self.TEST_IMPORTS:
+            self._add_score(
+                self.WEIGHT_TEST_IMPORT, 
+                f"Explicit import directed from testing framework: '{node.module}'."
+            )
+        self.generic_visit(node)
 
-    # Fallback to standalone analyzer if context is not pre-calculated
-    analyzer_instance = CodeContextAnalyzer()
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        analyzer_instance.visit(ast.Module(body=[node], type_ignores=[]))
-        return analyzer_instance.function_scores.get(node.name, 0.0)
-    elif isinstance(node, ast.ClassDef):
-        analyzer_instance.visit(ast.Module(body=[node], type_ignores=[]))
-        return analyzer_instance.class_scores.get(node.name, 0.0)
+    def visit_Call(self, node: ast.Call):
+        """Analyzes function calls to detect state isolation via mock objects."""
+        self.total_nodes += 1
+        call_name = self._extract_name(node)
+        if call_name in self.MOCK_OBJECTS:
+            self._add_score(
+                self.WEIGHT_MOCK_USAGE, 
+                f"Detected mock object instantiation or framework patch: '{call_name}'."
+            )
+        self.generic_visit(node)
+
+    def visit_Assert(self, node: ast.Assert):
+        """Tracks the frequency of assert statements to determine structural density."""
+        self.total_nodes += 1
+        self.assert_count += 1
+        self.generic_visit(node)
+
+
+def is_test_code(code_string: str | ast.AST, threshold: float = 1.1) -> bool:
+    """
+    Evaluates a string of Python code to determine if it is a testing artifact.
+    Designed specifically to prevent LLM token waste in generative fuzzing pipelines.
+
+    Args:
+        code_string (str): The raw string of Python source code to analyze.
+        threshold (float): The heuristic confidence threshold (0.0 to 1.0). 
+                           If threshold < 0 or > 1, the filter is completely bypassed (off mode).
+
+    Returns:
+        bool: True if the code is classified as a test, False otherwise.
+    """
+    # Bypass evaluation entirely if threshold is out of mathematical bounds
+    if threshold < 0.0 or threshold > 1.0:
+        return False
+        
+    # evaluation for empty strings to prevent parser overhead
+    if isinstance(code_string, str) and (not code_string or not code_string.strip()):
+        return False
+
+    try:
+        # Parse the raw string into an Abstract Syntax Tree via ASDL grammar rules
+        tree = ast.parse(code_string) if isinstance(code_string, str) else code_string
+    except SyntaxError as e:
+        log(f"SyntaxError encountered while parsing code string: {e}. Defaulting to False.")
+        return False
+
+    # Instantiate the visitor and traverse the AST nodes
+    classifier = TestCodeClassifier()
+    classifier.visit(tree)
+
+    # Calculate assertion density impact algorithmically
+    # A single assert in a small snippet gets partial weight; high density yields full weight.
+    if classifier.assert_count > 0:
+        if classifier.total_nodes > 0:
+            density = classifier.assert_count / classifier.total_nodes
+            # If assertions constitute more than 10% of the operational nodes, apply full weight
+            if density > 0.10:
+                classifier._add_score(
+                    TestCodeClassifier.WEIGHT_ASSERTION_PRESENCE, 
+                    "High assertion density detected."
+                )
+            else:
+                # Proportional mathematical weight for lower density distributions
+                classifier._add_score(
+                    TestCodeClassifier.WEIGHT_ASSERTION_PRESENCE * (density * 10), 
+                    "Minor assertion presence."
+                )
+
+    # Normalize the final score to a bounded maximum of 1.0
+    normalized_score = min(1.0, classifier.score)
     
-    return 0.0
+    log(f"Final normalized heuristic score: {normalized_score} (Threshold: {threshold})")
 
-def is_likely_test(node: ast.AST, threshold: float = 1.1, analyzer: CodeContextAnalyzer | None = None) -> bool:
-    """Convenience function to check if a node crosses the probability threshold."""
-    prob = calculate_test_probability(node, analyzer)
-    obj_type = "Class" if isinstance(node, ast.ClassDef) else "Function"
-    name = getattr(node, "name", "unknown")
-    log(f"{obj_type} : {name} has test prob of {prob}", level="INFO")
-    return prob >= threshold
-
+    # Evaluate against the configurable parameter
+    return normalized_score >= threshold

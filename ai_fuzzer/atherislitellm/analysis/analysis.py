@@ -4,14 +4,15 @@ from pathlib import Path
 
 COLUMNS = [
     "candidate_name", "entity_type", "model", 
-    "temperature", "prompt_id", "full_prompt", "fuzz_target",
+    "temperature", "prompt_id", "template_prompt", "fuzz_target", "full_prompt",
     "target_lines_of_code", 
     "target_logical_lines_of_code", "target_source_lines_of_code", 
     "target_cyclomatic_complexity", "target_cyclomatic_complexity_rank", 
-    "target_maintainability_index", "created_harness", "harness_lines_of_code", 
-    "harness_logical_lines_of_code", "harness_source_lines_of_code",
-    "harness_cyclomatic_complexity", "harness_cyclomatic_complexity_rank",
-    "harness_maintainability_index", "tokens_used"
+    "target_maintainability_index", "created_harness", "time_taken",
+    "harness_lines_of_code", "harness_logical_lines_of_code", 
+    "harness_source_lines_of_code", "harness_cyclomatic_complexity", 
+    "harness_cyclomatic_complexity_rank", "harness_maintainability_index", 
+    "input_tokens", "output_tokens", "total_tokens"
 ]
 
 def create_starting_dataframe() -> pd.DataFrame:

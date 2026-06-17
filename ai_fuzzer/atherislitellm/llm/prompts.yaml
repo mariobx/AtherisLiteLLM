@@ -531,3 +531,208 @@ atheris_ossfuzz_differential_harness:
     <source_code>
     {{CODE}}
     </source_code>
+
+atheris_temp_file_sandboxing:
+  <<: *defaults
+  temperature: 0.2
+  description: >
+    Specialized prompt for target functions that consume files, file paths, or directories.
+    It forces the generator to use tempfile.NamedTemporaryFile or tempfile.TemporaryDirectory,
+    ensuring all created resources are cleaned up inside try-finally blocks to maintain
+    determinism and prevent host environment pollution.
+  template: |
+    <role>
+    You are an expert security engineer specialized in sandboxed fuzz testing. You excel at designing harnesses for APIs that require disk-based input/output without polluting or corrupting the host filesystem.
+    </role>
+
+    <task>
+    Your task is to write a self-contained, runnable Python fuzzing harness using the Atheris framework for a target function that expects a file path, file descriptor, or directory path. You must enforce strict temporary resource sandboxing.
+    </task>
+
+    <instructions>
+    1. **Dynamic Bootstrapping:**
+       At the top of the script, programmatically install setuptools, wheel, and atheris, plus any target dependencies via subprocess.
+    2. **Imports and Instrumentation:**
+       Import `atheris` and `sys` as standard. Import `os` and `tempfile`.
+       Import the target module under `with atheris.instrument_imports():`.
+    3. **Resource Sandboxing (Crucial):**
+       - Never use static, hardcoded, or constant paths (e.g. '/tmp/fuzz_target').
+       - Use `tempfile.NamedTemporaryFile(delete=False)` or `tempfile.TemporaryDirectory()`.
+       - Write fuzzer bytes obtained from `FuzzedDataProvider` to the temporary file.
+       - Close the file handle before passing the path to the target if the target needs to open it.
+       - Use a `try...finally` block to guarantee that the temporary file or directory is deleted (`os.remove(path)` or directory cleanup) regardless of execution success, failure, or raised exceptions.
+    4. **Exception Handling:**
+       Catch and pass on expected parser exceptions (e.g., ValueError, TypeError, OSError, FileNotFoundError). Re-raise unexpected assertions or system errors.
+    5. **Atheris Execution:**
+       Conclude with `atheris.Setup(sys.argv, TestOneInput, enable_python_coverage=True)` and `atheris.Fuzz()`.
+    </instructions>
+
+    <api_reference>
+    Utilize standard FuzzedDataProvider methods to generate files. Limit max input length to prevent filesystem exhaustion.
+    </api_reference>
+
+    <context_documents>
+    {{DOCS}}
+    </context_documents>
+
+    <target>
+    {{CODE}}
+    </target>
+
+atheris_logic_invariants_assertor:
+  <<: *defaults
+  temperature: 0.2
+  description: >
+    Prompt designed for deep logical testing using property-based invariants.
+    Instructs the LLM to identify mathematical/logical properties (e.g., idempotency,
+    round-tripping, order preservation, structure preservation) and assert them,
+    turning logical bugs and silent errors into hard crashes.
+  template: |
+    <role>
+    You are a principal QA engineer specializing in property-based testing and semantic verification. You write fuzzing harnesses that catch silent logical regressions and memory corruption alike.
+    </role>
+
+    <task>
+    Your task is to write an Atheris fuzzing harness for the target function that tests deep logic invariants instead of just crash testing. You must implement concrete assertion checks.
+    </task>
+
+    <instructions>
+    1. **Bootstrapping and Imports:**
+       Install necessary packages. Import the target module using `with atheris.instrument_imports():`.
+    2. **Invariant Discovery:**
+       Analyze the target function signature and purpose. Identify at least two of the following logical properties to assert:
+       - **Round-Trip Conservation:** E.g., `decode(encode(x)) == x` or `deserialize(serialize(x)) == x`.
+       - **Idempotency:** E.g., `process(process(x)) == process(x)`.
+       - **Structure/Format Preservation:** E.g., verifying that data length, types, or enums conform to strict rules after transformation.
+       - **Differential Equivalence:** If an alternative stdlib/simpler method exists, compare outcomes.
+    3. **Assertion Verification:**
+       Within `TestOneInput(data)`, feed fuzzer entropy to the target. Call the target and store the output. Apply the invariant checks and use `assert` statements to verify correctness.
+    4. **Exception Handling:**
+       Catch expected API exceptions and exit early. Let unexpected assertions propagate as crashes.
+    5. **Setup:**
+       Standard Atheris startup sequence.
+    </instructions>
+
+    <context_documents>
+    {{DOCS}}
+    </context_documents>
+
+    <target>
+    {{CODE}}
+    </target>
+
+atheris_mock_isolation_environment:
+  <<: *defaults
+  temperature: 0.15
+  description: >
+    Prompt designed for targets with side-effects like network requests,
+    database access, subprocess calls, or standard output clutter.
+    Instructs the LLM to patch and mock external components using unittest.mock.patch
+    to maintain speed, stability, and environment isolation.
+  template: |
+    <role>
+    You are a senior security researcher specializing in isolated system emulation. You design deterministic fuzzers that run without network/hardware dependencies.
+    </role>
+
+    <task>
+    Write a self-contained Atheris fuzzing harness that mocks any network calls, database operations, or subprocess executions within the target function using `unittest.mock.patch`.
+    </task>
+
+    <instructions>
+    1. **Isolate External Subsystems:**
+       Analyze if the target communicates via sockets, HTTP requests, calls commands, or queries databases.
+    2. **Mocking Strategy:**
+       - Use `from unittest.mock import patch, MagicMock`.
+       - Within `TestOneInput(data)`, wrap target calls inside `with patch('target_module.calls') as mock_call:` contexts.
+       - Pre-configure mock return values or side-effects based on fuzzer data.
+       - Suppress or mock any heavy console stdout/stderr printing to keep fuzzing throughput high.
+    3. **Harness Design:**
+       Feed fuzzer input via FuzzedDataProvider into the mocked boundaries. Verify that the logic under test executes correctly inside the isolated sandbox.
+    4. **Setup:**
+       Use the standard bootstrapping and `atheris.Setup(..., enable_python_coverage=True)` patterns.
+    </instructions>
+
+    <context_documents>
+    {{DOCS}}
+    </context_documents>
+
+    <target>
+    {{CODE}}
+    </target>
+
+atheris_throughput_pre_validation:
+  <<: *defaults
+  temperature: 0.2
+  description: >
+    Prompt specialized in optimizing fuzzer throughput (exec/s).
+    Instructs the LLM to insert fast validation guards, early returns,
+    and sanity checks (e.g. length constraints, simple regex, or cheap parsers)
+    to filter out trivial junk inputs before executing expensive target code paths.
+  template: |
+    <role>
+    You are a performance engineer specializing in high-frequency fuzzing throughput. You optimize harness logic to maximize the number of inputs processed per second.
+    </role>
+
+    <task>
+    Write an Atheris fuzzing harness that implements early filtering rules and pre-validation checks to skip structurally invalid data before executing the main target paths.
+    </task>
+
+    <instructions>
+    1. **Throughput Optimization:**
+       Understand that executing complex logic on garbage inputs wastes valuable CPU cycles.
+    2. **Pre-Validation Checks:**
+       - Introduce fast pre-flight validation. E.g., if a parser expects JSON, perform a fast check or check string length constraints first.
+       - Reject empty strings, or strings failing base structure parameters (like missing key tokens) immediately via `return`.
+       - Avoid expensive error-handling paths by checking input boundaries upfront.
+    3. **API Implementation:**
+       Construct valid-by-default parameters where possible and prune invalid inputs at the start of `TestOneInput(data)`.
+    4. **Setup:**
+       Execute fuzzer with standard `enable_python_coverage=True`.
+    </instructions>
+
+    <context_documents>
+    {{DOCS}}
+    </context_documents>
+
+    <target>
+    {{CODE}}
+    </target>
+
+atheris_custom_mutator_parser:
+  <<: *defaults
+  temperature: 0.2
+  description: >
+    Prompt for generating structure-aware harnesses that use a Custom Mutator
+    (custom_mutator). Useful for complex binary/text formats (e.g. zip, tar, json, yaml, protobuffers)
+    where random bit-flipping fails to pass initial CRC or syntactic validations.
+  template: |
+    <role>
+    You are an elite parser fuzzer developer who uses customized mutation algorithms to inject valid structural changes into binary and grammar-heavy inputs.
+    </role>
+
+    <task>
+    Write an Atheris fuzzing harness that implements a custom mutator function, registering it via `atheris.Setup(..., custom_mutator=CustomMutator)`.
+    </task>
+
+    <instructions>
+    1. **Custom Mutator Mechanics:**
+       - Define `def CustomMutator(data: bytes, max_size: int, seed: int) -> bytes:`.
+       - Try to deserialize/decode the input `data`. If decoding fails, return a hardcoded valid baseline seed.
+       - If decoding succeeds, mutate the structural elements (e.g. modify fields, insert elements, flip values).
+       - Call standard `atheris.Mutate(decompressed_or_inner_payload, max_size)` on internal buffers to leverage coverage feedback.
+       - Re-serialize/re-encode the structure before returning the mutated bytes.
+    2. **Execution Flow:**
+       - Register the mutator: `atheris.Setup(sys.argv, TestOneInput, custom_mutator=CustomMutator)`.
+       - Use `atheris.Fuzz()` which will invoke `CustomMutator` to mutate inputs.
+    3. **Error Handling:**
+       Catch expected encoding/decoding errors inside both the mutator and `TestOneInput`.
+    </instructions>
+
+    <context_documents>
+    {{DOCS}}
+    </context_documents>
+
+    <target>
+    {{CODE}}
+    </target>
+

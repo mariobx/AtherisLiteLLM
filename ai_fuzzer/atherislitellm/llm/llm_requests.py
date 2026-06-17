@@ -30,7 +30,7 @@ def format_prompt(template: str, target_func: str, debug=False) -> str:
     doc_block = f"{fetch_docs.fetch_atheris_readme(debug)}\n\n{fetch_docs.fetch_atheris_hooking_docs(debug)}"
     return template.replace("{{CODE}}", target_func).replace("{{DOCS}}", doc_block)
 
-def get_response(client: dict, temperature: float, full_prompt: str, debug: bool = False, **kwargs) -> dict:
+def get_response(client: dict, temperature: float, full_prompt: str, debug: bool = False, **kwargs) -> Optional[dict]:
     """Prepare a prompt, call LLM via LiteLLM to generate content, and return the text."""
     log(f"Calling LLM ({client['model']})...", level="DEBUG", debug=debug)
     start_time = time.time()
@@ -66,4 +66,4 @@ def get_response(client: dict, temperature: float, full_prompt: str, debug: bool
 
     except Exception as e:
         log(f"LiteLLM error: {e}", level="ERROR")
-        return None, None
+        return None

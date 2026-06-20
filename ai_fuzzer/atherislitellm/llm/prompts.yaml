@@ -219,7 +219,7 @@ codegemma:
         atheris.Setup(sys.argv, TestOneInput)
         atheris.Fuzz()
     TARGET FUNCTION SOURCE CODE
-    {{DOCS}}
+    {{CODE}}
 
     Synthesize the Atheris fuzzing harness for the target function executing the exact logic demonstrated above.<end_of_turn>
     <start_of_turn>model
@@ -241,45 +241,10 @@ codegemma_2:
     4. **Validation Check**: If the constructed data is logically invalid before passing it to the target function, execute a `return` to skip the iteration and preserve execution speed.
 
     ### ATHERIS API REFERENCE
-    - `ConsumeBytes(count: int)`
-    - `ConsumeUnicodeNoSurrogates(count: int)`
-    - `ConsumeFloatListInRange(count: int, min: float, max: float)`
-    - `PickValueInList(l: list)`
-
-    ### EXAMPLE: MOCKING AND HIERARCHICAL DATA HANDLING
-    ```python
-    import sys
-    import atheris
-    from unittest.mock import patch, MagicMock
-
-    with atheris.instrument_imports():
-        from cloud_processor import analyze_payload, ServerContext
-
-    def TestOneInput(data: bytes):
-        fdp = atheris.FuzzedDataProvider(data)
-
-        # Step 1: Generate Primitives using FDP
-        session_id = fdp.ConsumeUnicodeNoSurrogates(16)
-        risk_score = fdp.ConsumeFloatInRange(0.0, 1.0)
-        server_region = fdp.PickValueInList()
-
-        # Step 2: Construct Complex Object
-        context_obj = ServerContext(id=session_id, risk=risk_score, region=server_region)
-
-        # Step 3: Isolate execution by mocking network dependencies
-        with patch('cloud_processor.requests.post') as mock_post:
-            mock_post.return_value.status_code = 200
-            try:
-                analyze_payload(context_obj)
-            except (ValueError, KeyError, TypeError):
-                # Ignore exceptions related to expected input sanitization
-                pass
-
-    if __name__ == "__main__":
-        atheris.Setup(sys.argv, TestOneInput)
-        atheris.Fuzz()
+    {{DOCS}}
+    
     TARGET CODE
-    {INSERT_COMPLEX_TARGET_SOURCE_CODE_HERE}
+    {{CODE}}
 
     Generate the fully self-contained fuzzing script executing the precise logical reasoning steps and mock implementation logic shown above.<end_of_turn>
     <start_of_turn>model
@@ -334,7 +299,7 @@ codegemma_3:
         atheris.Setup(sys.argv, atheris.MutateAndTestOneInput, custom_mutator=CustomMutator)
         atheris.Fuzz()
     TARGET PARSER CODE
-    {INSERT_COMPRESSOR_OR_PARSER_SOURCE_CODE_HERE}
+    {{CODE}}
 
     Synthesize the structure-aware Atheris fuzzing harness featuring a custom mutator tailored exactly to the grammatical requirements of the target code.<end_of_turn>
     <start_of_turn>model
@@ -726,6 +691,183 @@ atheris_custom_mutator_parser:
        - Use `atheris.Fuzz()` which will invoke `CustomMutator` to mutate inputs.
     3. **Error Handling:**
        Catch expected encoding/decoding errors inside both the mutator and `TestOneInput`.
+    </instructions>
+
+    <context_documents>
+    {{DOCS}}
+    </context_documents>
+
+    <target>
+    {{CODE}}
+    </target>
+
+
+atheris_protobuf_grammar_mutator:
+  <<: *defaults
+  temperature: 0.2
+  description: >
+    Instructs the LLM to generate a highly specialized Atheris fuzzer utilizing libprotobuf-mutator for structured grammar generation. This is essential for deep configuration, SBOM, or lockfile parser fuzzing, allowing the fuzzer to bypass shallow syntax rejection barriers.
+  template: |
+    <role>
+    You are an elite DevSecOps Architect and Vulnerability Researcher specializing in coverage-guided fuzzing of complex, structured parsers using Python Atheris and libprotobuf-mutator.
+    </role>
+
+    <task>
+    Generate a Python Atheris fuzzing harness that utilizes Protocol Buffers to dynamically construct and mutate grammatically valid inputs for the provided target parser. The fuzzer must autonomously convert the mutated protobuf objects into the structured format (e.g., JSON or YAML) expected by the target function.
+    </task>
+
+    <instructions>
+    1. Conduct a deep architectural analysis of the CODE to determine the expected structural schema (e.g., expected keys, required nested dictionaries, string versus integer constraints) of the configuration or lockfile parser.
+    2. Define a multi-line Python string containing a valid, comprehensive `proto3` schema that accurately mirrors the target application's expected input structure hierarchy.
+    3. Import the necessary base modules globally, ensuring `atheris` and `sys` are persistently available.
+    4. Implement the `with atheris.instrument_imports():` context manager. You must encapsulate the import of the target module and all domain-specific internal dependencies within this block to guarantee complete Abstract Syntax Tree (AST) coverage tracking.
+    5. Write a robust serialization function that dynamically converts the populated protobuf object into a Python dictionary or JSON string. This function must strictly handle empty, malformed, or uninitialized protobuf fields gracefully without raising unhandled serialization exceptions.
+    6. Implement the core entry point: `TestOneInput(data: bytes)`. Within this function, you MUST NOT process raw bytes directly. Instead, design the logic assuming the existence of an `atheris_libprotobuf_mutator` wrapper that passes a pre-parsed Protocol Buffer object directly into the function.
+    7. Execute the target parser using the serialized, grammatically valid structured data.
+    8. Implement a strict, defensive `try...except` block around the core execution logic. You must explicitly catch and silently ignore expected structural parsing errors (e.g., `ValueError`, `KeyError`, or specific `TypeError` exceptions related to missing required attributes).
+    9. You are STRICTLY FORBIDDEN from using the `except Exception: pass` anti-pattern. You must never mask critical systemic failures such as `SystemExit`, `MemoryError`, or `RecursionError`.
+    10. Ensure the script manages arbitrary temporary files using securely randomized and isolated temporary directories (e.g., strictly utilizing `tempfile.TemporaryDirectory(prefix="fuzz-iso-")`) to absolutely prevent filesystem collisions and race conditions during highly concurrent execution loops.
+    11. Conclude the harness architecture with the standard Atheris initialization sequence: `atheris.Setup(sys.argv, TestOneInput)` followed by the blocking `atheris.Fuzz()` call.
+    </instructions>
+
+    <context_documents>
+    {{DOCS}}
+    </context_documents>
+
+    <target>
+    {{CODE}}
+    </target>
+
+atheris_async_event_loop:
+  <<: *defaults
+  temperature: 0.15
+  description: >
+    Instructs the LLM to write an advanced Atheris fuzzer capable of testing asynchronous Python coroutines safely, completely circumventing memory leaks, file descriptor exhaustion, and event loop degradation.
+  template: |
+    <role>
+    You are an elite DevSecOps Architect and Python Fuzzing Specialist, renowned globally for discovering obscure edge-case race conditions and systemic panics within high-throughput asynchronous applications.
+    </role>
+
+    <task>
+    Generate a highly optimized, state-preserving Python Atheris fuzzer designed specifically to target `async def` coroutines. You are required to safely manage the asyncio event loop entirely within the synchronous, high-velocity constraints of the underlying libFuzzer C++ backend.
+    </task>
+
+    <instructions>
+    1. Systematically identify the target asynchronous entry points and coroutines within the provided CODE.
+    2. Import `atheris`, `sys`, and `asyncio` globally at the top of the file.
+    3. Place the import statement for the target asynchronous module strictly within the `with atheris.instrument_imports():` context manager to ensure libFuzzer can accurately track bytecode AST coverage.
+    4. WARNING: To prevent catastrophic file descriptor exhaustion and uncontrolled memory leaks, you MUST NOT under any circumstances use `asyncio.run()` inside the `TestOneInput` mutational loop.
+    5. Instead, globally declare and instantiate a persistent event loop using `loop = asyncio.new_event_loop()` outside of the fuzzing loop execution scope. Ensure this loop remains active for the duration of the process.
+    6. Define the entry point: `TestOneInput(data: bytes)`. Instantiate an `atheris.FuzzedDataProvider(data)` object to extract variable-length strings, integers, or complex byte arrays to feed the target coroutine.
+    7. Schedule and execute the target coroutine using `loop.run_until_complete(target_function(fuzzed_args))`.
+    8. Enclose the asynchronous execution in a highly specific `try...except` block. Catch expected exceptions inherent to async operations and network simulation, such as `asyncio.TimeoutError`, `ConnectionRefusedError`, or domain-specific data validation errors. Do not deploy bare `except:` or `except Exception:`.
+    9. Explicitly handle the cancellation of any pending background tasks before the `TestOneInput` function returns. This is mandatory to maintain strict memory hygiene and prevent cross-iteration contamination.
+    10. Initialize the fuzzer system with `atheris.Setup(sys.argv, TestOneInput)` strictly followed by `atheris.Fuzz()`.
+    </instructions>
+
+    <context_documents>
+    {{DOCS}}
+    </context_documents>
+
+    <target>
+    {{CODE}}
+    </target>
+
+atheris_stateful_api_sequence:
+  <<: *defaults
+  temperature: 0.25
+  description: >
+    Instructs the LLM to engineer a stateful fuzzer that consumes coverage-guided bytes to autonomously generate and execute a random, potentially malicious sequence of method calls against an instantiated class object.
+  template: |
+    <role>
+    You are a distinguished AI Prompt Engineer and Security Researcher specializing in uncovering invalid state transitions, race conditions, and temporal use-after-free vulnerabilities via advanced stateful API sequence fuzzing.
+    </role>
+
+    <task>
+    Construct a stateful Python Atheris fuzzing harness. Deviating from standard stateless function testing, this fuzzer must instantiate the target class and utilize the fuzzer's byte stream entropy to dynamically dictate an unpredictable sequence of method invocations, thoroughly exploring the multidimensional state machine of the object.
+    </task>
+
+    <instructions>
+    1. Analyze the CODE to identify a deeply stateful class structure (e.g., an object possessing an initialization state, setter/getter modification methods, and a destruction or execution method).
+    2. Import `atheris` globally, and strictly enforce the use of the `with atheris.instrument_imports():` block for the target library to ensure dynamic execution path tracking is preserved.
+    3. Define the core operational function `TestOneInput(data: bytes)`.
+    4. Wrap the incoming byte stream by instantiating `fdp = atheris.FuzzedDataProvider(data)`.
+    5. Instantiate a completely fresh, unpolluted instance of the target class at the very beginning of the `TestOneInput` function to ensure state isolation.
+    6. Implement a continuous processing loop: `while fdp.remaining_bytes() > 0:`.
+    7. Inside this execution loop, extract a routing integer using `action = fdp.ConsumeIntInRange(0, N)` where N accurately represents the total number of target methods available on the class instance.
+    8. Construct a comprehensive `if/elif` routing block utilizing the `action` integer to invoke different methods on the class instance. Use the `fdp` object to consume any necessary arguments for each specific method dynamically (e.g., utilizing `fdp.ConsumeUnicodeNoSurrogates(24)` for generating safe string arguments).
+    9. Utilize an aggressive `try...except` block to catch and suppress logical errors arising from invalid chronological operations (e.g., calling an `.execute()` method before `.initialize()` has been invoked), carefully suppressing domain-specific exceptions like `ValueError` or custom `InvalidState` runtime exceptions.
+    10. NEVER swallow `SystemExit`, `RecursionError`, or the base `Exception` class.
+    11. Finalize the script architecture by binding the libFuzzer backend via `atheris.Setup(sys.argv, TestOneInput)` and invoking `atheris.Fuzz()`.
+    </instructions>
+
+    <context_documents>
+    {{DOCS}}
+    </context_documents>
+
+    <target>
+    {{CODE}}
+    </target>
+
+atheris_native_c_extension_crash_catcher:
+  <<: *defaults
+  temperature: 0.2
+  description: >
+    Instructs the LLM to write a resilient fuzzer targeting Python bindings for native C/C++ extensions, explicitly prioritizing OS-level signal trapping for segmentation faults and strict virtual memory boundary enforcement.
+  template: |
+    <role>
+    You are a world-class DevSecOps Engineer and Systems Vulnerability Expert specializing in deep memory corruption, buffer overflows, and fuzzing CPython native extensions via the Atheris engine.
+    </role>
+
+    <task>
+    Generate a highly resilient Python Atheris harness targeted specifically at a Python wrapper executing underlying C/C++ native code. The harness architecture must be explicitly designed to detect, trap, and report memory segmentation faults without crashing the host CI/CD orchestration environment uncontrollably.
+    </task>
+
+    <instructions>
+    1. Precisely identify the native extension or the `ctypes`/`cffi` external interface within the provided CODE.
+    2. Import `atheris`, `sys`, and the Python `resource` module globally at the top of the file.
+    3. Place the target module import inside the `with atheris.instrument_imports():` context manager to ensure execution paths crossing the C-API boundary are tracked (assuming the extension is compiled with source-level LLVM coverage).
+    4. Implement strict system resource limits using `resource.setrlimit()` immediately at the top of the execution script. You must limit the virtual address space (`resource.RLIMIT_AS`) and cap the maximum core dump size (`resource.RLIMIT_CORE`) to prevent the C++ fuzzing backend from hanging indefinitely on massive memory leaks caused by extreme mutational anomalies.
+    5. Define `TestOneInput(data: bytes)`. Utilize `atheris.FuzzedDataProvider(data)` to generate highly volatile byte arrays and extreme boundary condition integers specifically geared towards triggering C-level integer overflows or buffer overwrites.
+    6. Wrap the execution of the native invocation inside a `try...except` block. Note explicitly in the code comments that Python cannot natively catch a `SIGSEGV` using a standard exception block, and that Atheris's default ASAN (AddressSanitizer) integration is required to handle the C-level crash detection automatically.
+    7. Catch valid Python-level pre-validation exceptions (e.g., `TypeError`, `ValueError`) that the wrapper itself might raise before the execution ever hits the native C code. Do NOT mask exceptions broadly.
+    8. Ensure any dynamically allocated C-structures, memory buffers, or file pointers initialized by the Python wrapper are explicitly closed, freed, or garbage collected to avoid synthetic memory exhaustion across millions of fuzzer iterations.
+    9. Complete the harness architecture with `atheris.Setup(sys.argv, TestOneInput)` followed by `atheris.Fuzz()`.
+    </instructions>
+
+    <context_documents>
+    {{DOCS}}
+    </context_documents>
+
+    <target>
+    {{CODE}}
+    </target>
+
+atheris_django_framework_isolation:
+  <<: *defaults
+  temperature: 0.15
+  description: >
+    Instructs the LLM to synthesize an advanced fuzzer designed for testing complex logic deeply embedded within a monolithic Django framework, strictly enforcing in-memory database isolation and transactional sandboxing.
+  template: |
+    <role>
+    You are an elite DevSecOps Architect and Web Framework Security Analyst, globally recognized for dissecting complex monolithic applications and isolating framework-bound logic for high-speed, coverage-guided fuzzing.
+    </role>
+
+    <task>
+    Construct an Atheris fuzzing harness specifically architected to target an embedded Django application component (such as a complex file processor, ORM validator, or deeply nested middleware parser). You must properly and absolutely isolate the Django environment, actively preventing database state contamination across rapid mutational iterations.
+    </task>
+
+    <instructions>
+    1. Import `atheris`, `sys`, and `os` globally. Subsequently, import `django` and `from django.conf import settings`.
+    2. Before initializing any Atheris components, strictly configure the Django environment. Call `settings.configure()` providing a highly minimal, absolutely isolated configuration. You MUST utilize an in-memory SQLite database architecture by explicitly defining: `DATABASES = {'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}}`. This ensures physical I/O bottlenecks do not systematically degrade fuzzer performance.
+    3. Invoke `django.setup()` immediately following the configuration initialization to populate the framework registry.
+    4. Proceed to import the target CODE logic STRICTLY INSIDE the `with atheris.instrument_imports():` context block. It is absolutely imperative that the global framework configuration happens prior to this block, while the specific target logic import happens inside it.
+    5. Define the mutational entry point `TestOneInput(data: bytes)`. Utilize `atheris.FuzzedDataProvider(data)` to synthesize randomized strings, complex nested dictionaries, or mock file objects that accurately mimic malicious HTTP payload injections.
+    6. To completely eradicate cross-iteration state contamination, wrap the execution of the target logic within a strict atomic transaction block using `with transaction.atomic():`.
+    7. Execute the target processor, validator, or logic sequence.
+    8. Crucially, once execution within the block finishes, explicitly call `transaction.set_rollback(True)` to purge all state changes from the in-memory database. This guarantees the environment is returned to a mathematically pristine state for the subsequent fuzzer iteration.
+    9. Implement an aggressive `try...except` structure to suppress expected Django framework rejection errors (e.g., `ValidationError`, `ObjectDoesNotExist`, `SuspiciousOperation`). You are forbidden from using `except Exception:`.
+    10. Complete the sophisticated harness deployment with `atheris.Setup(sys.argv, TestOneInput)` and `atheris.Fuzz()`.
     </instructions>
 
     <context_documents>

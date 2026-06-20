@@ -4,6 +4,9 @@ import inspect
 from pathlib import Path
 from datetime import datetime
 
+_ORIGINAL_STDOUT = sys.stdout
+_ORIGINAL_STDERR = sys.stderr
+
 _LOG_FILE: Path | None = None
 
 def init_logger(output_dir: Path) -> None:
@@ -40,14 +43,14 @@ def log(msg: str, level: str = "INFO", debug: bool = False) -> None:
         display_msg = f"[{display_ts}] [{level}] {msg}"
         
         if level == "ERROR":
-            sys.stderr.write(display_msg + "\n")
+            _ORIGINAL_STDERR.write(display_msg + "\n")
         elif level == "INFO":
-            sys.stdout.write(display_msg + "\n")
+            _ORIGINAL_STDOUT.write(display_msg + "\n")
         elif level == "DEBUG" and debug:
-            sys.stdout.write(display_msg + "\n")
+            _ORIGINAL_STDOUT.write(display_msg + "\n")
             
     except Exception as e:
-        sys.stderr.write(f"[Logger Error] {e}\n")
+        _ORIGINAL_STDERR.write(f"[Logger Error] {e}\n")
 
 def report_failure(error_msg: str, context: str = "General") -> None:
     """Write a failure report file in the log directory and log the event."""
@@ -62,4 +65,4 @@ def report_failure(error_msg: str, context: str = "General") -> None:
         with open(report_path, "a", encoding="utf-8") as f:
             f.write(f"[{ts}] [{context}]\n{error_msg}\n{'-'*40}\n")
     except Exception as e:
-        sys.stderr.write(f"[Critical Logger Error] {e}\n")
+        _ORIGINAL_STDERR.write(f"[Critical Logger Error] {e}\n")

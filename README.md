@@ -18,7 +18,8 @@ This project creates a LLM-assisted Python fuzzing harness generator designed to
   - `-p`, `--prompt`: ID of the prompt template to use.
   - `-k`, `--api-key`: API key string (optional if environment variable exists).
   - `-e`, `--extra-model-prompts`: Vendor-specific parameters as `key=value` pairs.
-  - `-d`, `--debug`: Enable verbose logging.
+  - `-d`, `-v`, `--verbose`, `--debug`: Enable verbose application logging.
+  - `--litellm_debug_mode`: Enable full LiteLLM request/response dumping. Outputs a massive log file (`litellm_debug.log`) into the specific run directory. Use this ONLY if you need to debug the raw HTTP requests being sent to the LLM.
   - `-sm`, `--smell`: Filter out low-maintainability code using Radon.
   - `-w`, `--workers`: Number of concurrent generation threads.
   - `-tt`, `--test-threshold`: Threshold for filtering out code used for testing to save on tokens (default: `1.1` which disables the filter). Higher values filter less code, lower values filter more.

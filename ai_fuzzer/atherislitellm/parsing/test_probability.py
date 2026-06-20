@@ -195,8 +195,8 @@ def is_test_code(code_string: str | ast.AST, threshold: float = 1.1) -> bool:
 
     # Normalize the final score to a bounded maximum of 1.0
     normalized_score = min(1.0, classifier.score)
-    
-    log(f"Final normalized heuristic score: {normalized_score} (Threshold: {threshold})")
+    if normalized_score >= threshold:
+        log(f"Test code detected! Skipping to save you api tokens...\nScore: {normalized_score} >= {threshold}", level="DEBUG")
 
     # Evaluate against the configurable parameter
     return normalized_score >= threshold

@@ -47,12 +47,31 @@ def resolve_api_key(arg_val: str | None, model: str, debug: bool = False) -> str
     return None
 
 class ParseKwargs(argparse.Action):
+    @staticmethod
+    def _cast_value(val: str):
+        """Auto-cast string values to appropriate Python types."""
+        if val.lower() == 'true':
+            return True
+        if val.lower() == 'false':
+            return False
+        if val.lower() == 'none':
+            return None
+        try:
+            return int(val)
+        except ValueError:
+            pass
+        try:
+            return float(val)
+        except ValueError:
+            pass
+        return val
+
     def __call__(self, parser, namespace, values, option_string=None):
         setattr(namespace, self.dest, dict())
         for value in values:
             if '=' in value:
                 key, val = value.split('=', 1)
-                getattr(namespace, self.dest)[key] = val
+                getattr(namespace, self.dest)[key] = self._cast_value(val)
             else:
                 log(f"Ignoring malformed extra parameter: {value}", level="DEBUG", debug=True)
 
@@ -135,6 +154,8 @@ Examples:
                         help="Vendor-specific parameters as key=value pairs.")
     parser.add_argument("-d", "--verbose", "-v", "--debug", action="store_true",
                         help="Enable verbose logging.")
+    parser.add_argument("--litellm_debug_mode", action="store_true",
+                        help="Dump full LiteLLM request/response to a file inside the output directory.")
     parser.add_argument("-sm", "--smell", action="store_true",
                         help="Filter out low-maintainability code using Radon.")
     parser.add_argument("-w", "--workers", type=validate_workers, default=1,
@@ -203,6 +224,7 @@ Examples:
             smell=args.smell,
             workers=args.workers,
             test_threshold=args.test_threshold,
+            litellm_debug_mode=args.litellm_debug_mode,
             **extra_params
         )
     except Exception as e:

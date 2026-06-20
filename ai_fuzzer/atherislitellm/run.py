@@ -1,3 +1,4 @@
+from ai_fuzzer.atherislitellm.llm.llm_requests import normalize_ollama_model
 from pydantic import functional_validators
 import concurrent.futures
 from pathlib import Path
@@ -140,25 +141,33 @@ def run_multi_threaded_generation(
             ): name for name, prompt in all_fuzzing_candidates.items()
         }
         
-        for future in concurrent.futures.as_completed(futures):
-            result = future.result()
-            try:
-                if result:
-                    analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'model'] = result['model']
-                    analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'created_harness'] = result['content']
-                    analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'input_tokens'] = result['input_tokens']
-                    analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'output_tokens'] = result['output_tokens']
-                    analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'total_tokens'] = result['total_tokens']
-                    analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'time_taken'] = result['time_taken']
-                    
-                    #update CSV incrementally to avoid progress loss on crash
-                    #this runs on a single thread, there is no issue with constantly calling .to_csv
-                    analysis_df.to_csv(run_dir / "analysis.csv", index=False)
-            except Exception as e:
-                report_failure(f"Thread execution failed for {result['name']}: {e}", "Threading")
+        try:
+            for future in concurrent.futures.as_completed(futures):
+                candidate_name = futures[future]
+                try:
+                    result = future.result()
+                    if result:
+                        analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'model'] = result['model']
+                        analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'created_harness'] = atherisai.extract_code_blocks(result['content'])
+                        analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'input_tokens'] = result['input_tokens']
+                        analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'output_tokens'] = result['output_tokens']
+                        analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'total_tokens'] = result['total_tokens']
+                        analysis_df.loc[analysis_df['candidate_name'] == result['name'], 'time_taken'] = result['time_taken']
+                        
+                        #update CSV incrementally to avoid progress loss on crash
+                        #this runs on a single thread, there is no issue with constantly calling .to_csv
+                        analysis_df.to_csv(run_dir / "analysis.csv", index=False)
+                except Exception as e:
+                    report_failure(f"Thread execution failed for {candidate_name}: {e}", "Threading")
+        except KeyboardInterrupt:
+            log("Generation interrupted by user. Cancelling pending tasks...", level="WARNING")
+            for future in futures:
+                future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
 
 def run(
-        source_dir: Path, output_dir: Path, prompt_id: str, prompt_yaml_path: Path, model: str, api: str | None, debug: bool, smell: bool, workers: int = 1, test_threshold: float = 1.1, **kwargs
+        source_dir: Path, output_dir: Path, prompt_id: str, prompt_yaml_path: Path, model: str, api: str | None, debug: bool, smell: bool, workers: int = 1, test_threshold: float = 1.1, litellm_debug_mode: bool = False, **kwargs
 ) -> None:
     """
     Top-level orchestrator for the fuzzing harness generation pipeline.
@@ -167,7 +176,7 @@ def run(
     log(f"Starting run (Model: {model}, Workers: {workers})", level="INFO")
 
     client = {
-            "model": model.strip() if model else "",
+            "model": normalize_ollama_model(model.strip() if model else ""),
             "api_key": api.strip() if api else None,
     }
 
@@ -176,11 +185,15 @@ def run(
         output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%m-%d-%y_%I-%M-%S%p").lower()
         safe_model_str = model.strip().replace("/", ".").replace(":", ".")
-        output_dir_name = f"fuzzing({source_dir.name})using({safe_model_str}on({timestamp})"
+        output_dir_name = f"fuzzing({source_dir.name})using({safe_model_str})on({timestamp})"
         run_dir = output_dir / output_dir_name
         run_dir.mkdir(parents=True, exist_ok=True)
         log(f"Output directory initialized at: {run_dir}", level="DEBUG", debug=debug)
-
+        
+        if litellm_debug_mode:
+            from ai_fuzzer.atherislitellm.llm.llm_requests import enable_debug_logging
+            enable_debug_logging(run_dir)
+        
         #load the prompt template
         log(f"Loading prompt template: {prompt_id}", level="DEBUG", debug=debug)
         temperature, _, template = atherisai.load_prompt_data(prompt_id, prompt_yaml_path, debug)
@@ -253,18 +266,20 @@ def run(
         analysis_df.to_csv(run_dir / "analysis.csv", index=False)
 
         #run the multi threaded harness generation
-        run_multi_threaded_generation(
-            all_fuzzing_candidates=all_fuzzing_candidates,
-            client=client,
-            run_dir=run_dir,
-            temperature=temperature,
-            workers=workers,
-            debug=debug,
-            analysis_df=analysis_df,
-            **kwargs
-        )
-
-        log(f"Success. All harnesses saved in: {run_dir}", level="INFO")
+        try:
+            run_multi_threaded_generation(
+                all_fuzzing_candidates=all_fuzzing_candidates,
+                client=client,
+                run_dir=run_dir,
+                temperature=temperature,
+                workers=workers,
+                debug=debug,
+                analysis_df=analysis_df,
+                **kwargs
+            )
+            log(f"Success. All harnesses saved in: {run_dir}", level="INFO")
+        except KeyboardInterrupt:
+            log(f"Generation aborted by user. Partial harnesses saved in: {run_dir}", level="WARNING")
 
     except Exception as e:
         report_failure(f"Fatal coordination error: {e}", "Orchestration")
